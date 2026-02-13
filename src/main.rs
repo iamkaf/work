@@ -16,8 +16,12 @@ struct Args {
     depth: usize,
 
     /// How many days back to look
-    #[arg(long, default_value = "7")]
+    #[arg(long, default_value = "7", conflicts_with = "today")]
     days: i64,
+
+    /// Shortcut for "commits since local midnight"
+    #[arg(long, conflicts_with = "days")]
+    today: bool,
 
     /// Max number of commits to print (across all repos)
     #[arg(short, long, default_value = "50")]
@@ -203,10 +207,23 @@ fn run(args: Args) -> Result<(), String> {
     }
 
     let id = default_identity();
-    let since = chrono::Local::now()
-        .timestamp()
-        .saturating_sub(args.days.saturating_mul(24 * 60 * 60));
-
+    let since = if args.today {
+        use chrono::{Local, TimeZone};
+        let now = Local::now();
+        let midnight = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| "Failed to compute local midnight".to_string())?;
+        Local
+            .from_local_datetime(&midnight)
+            .single()
+            .ok_or_else(|| "Failed to resolve local midnight".to_string())?
+            .timestamp()
+    } else {
+        chrono::Local::now()
+            .timestamp()
+            .saturating_sub(args.days.saturating_mul(24 * 60 * 60))
+    };
     let mut commits: Vec<CommitLine> = repos
         .par_iter()
         .flat_map_iter(|r| collect_commits(r, since, &id, &args))
@@ -215,13 +232,15 @@ fn run(args: Args) -> Result<(), String> {
     commits.sort_by_key(|c| -c.time);
 
     if commits.is_empty() {
-        return Err(if args.all {
-            format!("No commits found in the last {} days", args.days)
+        let window = if args.today {
+            "today".to_string()
         } else {
-            format!(
-                "No commits found for your identity in the last {} days (try --all)",
-                args.days
-            )
+            format!("the last {} days", args.days)
+        };
+        return Err(if args.all {
+            format!("No commits found in {window}")
+        } else {
+            format!("No commits found for your identity in {window} (try --all)")
         });
     }
 
@@ -248,11 +267,15 @@ fn run(args: Args) -> Result<(), String> {
     }
 
     if !args.raw {
-        println!(
-            "\n{} commits shown (last {} days)",
-            commits.len(),
-            args.days
-        );
+        if args.today {
+            println!("\n{} commits shown (today)", commits.len());
+        } else {
+            println!(
+                "\n{} commits shown (last {} days)",
+                commits.len(),
+                args.days
+            );
+        }
     }
 
     Ok(())
@@ -327,6 +350,7 @@ mod tests {
             path: tmp.path().to_path_buf(),
             depth: 3,
             days: 7,
+            today: false,
             limit: 50,
             remote: false,
             all: true,

@@ -21,7 +21,8 @@ cargo install --git https://github.com/iamkaf/work
 
 ```
 work <path>                 # recent commits (default: last 7 days, limit 50)
-work --days 1 <path>         # just today-ish
+work --today <path>          # commits since local midnight
+work --days 1 <path>         # just today-ish (rolling 24h window)
 work -n 200 --days 30 <path> # longer window
 work --remote <path>         # fetch before scanning (slower)
 work --all <path>            # don't filter to your author identity
@@ -32,6 +33,7 @@ work -r <path>               # raw TSV for piping
 |------|-------|---------|-------------|
 | `--depth` | `-L` | `3` | Max directory depth to search for repos |
 | `--days` |  | `7` | How many days back to look |
+| `--today` |  | off | Shortcut for commits since local midnight |
 | `--limit` | `-l` | `50` | Max number of commits to print (across all repos) |
 | `--remote` |  | off | Fetch from remotes before scanning |
 | `--all` |  | off | Show commits by anyone (ignore your author identity filter) |

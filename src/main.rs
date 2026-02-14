@@ -340,15 +340,18 @@ fn run(args: Args) -> Result<(), String> {
             let repo_padded = format!("{rel_repo_s:<repo_width$}", repo_width = repo_width);
             let repo_fmt = format!("\x1b[1m{repo_padded}\x1b[0m");
             let hash_fmt = format!("\x1b[2m{short}\x1b[0m");
+            // Align by padding *before* the sign, not between sign and digits.
+            let plus_plain = format!("+{}", c.insertions);
+            let minus_plain = format!("-{}", c.deletions);
             let plus_fmt = format!(
-                "\x1b[32m+{:>ins_width$}\x1b[0m",
-                c.insertions,
-                ins_width = ins_width
+                "\x1b[32m{:>w$}\x1b[0m",
+                plus_plain,
+                w = ins_width + 1
             );
             let minus_fmt = format!(
-                "\x1b[31m-{:>del_width$}\x1b[0m",
-                c.deletions,
-                del_width = del_width
+                "\x1b[31m{:>w$}\x1b[0m",
+                minus_plain,
+                w = del_width + 1
             );
 
             println!(

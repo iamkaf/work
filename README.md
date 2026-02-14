@@ -4,11 +4,12 @@ A CLI that scans a directory for git repos and prints your recent commits across
 
 ```
 $ work ~/code
-2026-02-13 19:02  apps/dashboard  1a2b3c4  fix: make sidebar sticky
-2026-02-13 18:11  tools/dirty      8d9e0f1  chore: add tests for nested repos
-2026-02-12 22:40  libs/ui-kit      44aa991  feat: new button variant
+2026-02-13 19:02  apps/dashboard  1a2b3c4  +12 -3  fix: make sidebar sticky
+2026-02-13 18:11  tools/dirty      8d9e0f1  +48 -10 chore: add tests for nested repos
+2026-02-12 22:40  libs/ui-kit      44aa991  +120 -7 feat: new button variant
 
 50 commits shown (last 7 days)
+Total LoC: +180 -20
 ```
 
 ## Install
@@ -37,7 +38,8 @@ work -r <path>               # raw TSV for piping
 | `--limit` | `-l` | `50` | Max number of commits to print (across all repos) |
 | `--remote` |  | off | Fetch from remotes before scanning |
 | `--all` |  | off | Show commits by anyone (ignore your author identity filter) |
-| `--raw` | `-r` | off | Tab-separated output: `time\trepo\thash\tsubject` |
+| `--merges` |  | off | Include merge commits (skipped by default) |
+| `--raw` | `-r` | off | Tab-separated output: `time\trepo\thash\t+ins\t-del\tsubject` |
 
 ## How it works
 

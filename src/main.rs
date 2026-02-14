@@ -35,6 +35,10 @@ struct Args {
     #[arg(long)]
     all: bool,
 
+    /// Include merge commits
+    #[arg(long)]
+    merges: bool,
+
     /// Raw output for piping (tab-separated)
     #[arg(short, long)]
     raw: bool,
@@ -52,6 +56,8 @@ struct CommitLine {
     time: i64,
     oid: Oid,
     summary: String,
+    insertions: usize,
+    deletions: usize,
 }
 
 fn find_repos(base: &Path, max_depth: usize) -> Vec<PathBuf> {
@@ -120,6 +126,34 @@ fn matches_identity(id: &Identity, author_name: Option<&str>, author_email: Opti
     false
 }
 
+fn diff_stats(repo: &Repository, commit: &git2::Commit) -> (usize, usize) {
+    let commit_tree = match commit.tree() {
+        Ok(t) => t,
+        Err(_) => return (0, 0),
+    };
+
+    let parent_tree = if commit.parent_count() >= 1 {
+        commit
+            .parent(0)
+            .ok()
+            .and_then(|p| p.tree().ok())
+    } else {
+        None
+    };
+
+    let diff = match repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&commit_tree), None) {
+        Ok(d) => d,
+        Err(_) => return (0, 0),
+    };
+
+    let stats = match diff.stats() {
+        Ok(s) => s,
+        Err(_) => return (0, 0),
+    };
+
+    (stats.insertions(), stats.deletions())
+}
+
 fn collect_commits(repo_path: &Path, since: i64, id: &Identity, args: &Args) -> Vec<CommitLine> {
     if args.remote {
         fetch_repo(repo_path);
@@ -160,16 +194,18 @@ fn collect_commits(repo_path: &Path, since: i64, id: &Identity, args: &Args) -> 
             break;
         }
 
+        if !args.merges && commit.parent_count() > 1 {
+            continue;
+        }
+
         if !args.all {
             let author = commit.author();
-            if !matches_identity(
-                id,
-                author.name(),
-                author.email(),
-            ) {
+            if !matches_identity(id, author.name(), author.email()) {
                 continue;
             }
         }
+
+        let (insertions, deletions) = diff_stats(&repo, &commit);
 
         let summary = commit
             .summary()
@@ -182,6 +218,8 @@ fn collect_commits(repo_path: &Path, since: i64, id: &Identity, args: &Args) -> 
             time: t,
             oid: commit.id(),
             summary,
+            insertions,
+            deletions,
         });
     }
 
@@ -246,21 +284,35 @@ fn run(args: Args) -> Result<(), String> {
 
     let commits = commits.into_iter().take(args.limit).collect::<Vec<_>>();
 
+    let mut total_ins: usize = 0;
+    let mut total_del: usize = 0;
+
     for c in &commits {
         let rel_repo = c.repo.strip_prefix(&base).unwrap_or(&c.repo);
         let t = format_time_local(c.time);
         let short = c.oid.to_string();
         let short = &short[..7.min(short.len())];
 
+        total_ins = total_ins.saturating_add(c.insertions);
+        total_del = total_del.saturating_add(c.deletions);
+
         if args.raw {
-            // time\trepo\thash\tsummary
-            println!("{t}\t{}\t{short}\t{}", rel_repo.display(), c.summary);
+            // time\trepo\thash\t+ins\t-del\tsummary
+            println!(
+                "{t}\t{}\t{short}\t+{}\t-{}\t{}",
+                rel_repo.display(),
+                c.insertions,
+                c.deletions,
+                c.summary
+            );
         } else {
             println!(
-                "{}  \x1b[1m{}\x1b[0m  {}  {}",
+                "{}  \x1b[1m{}\x1b[0m  {}  +{} -{}  {}",
                 t,
                 rel_repo.display(),
                 short,
+                c.insertions,
+                c.deletions,
                 c.summary
             );
         }
@@ -276,6 +328,7 @@ fn run(args: Args) -> Result<(), String> {
                 args.days
             );
         }
+        println!("Total LoC: +{} -{}", total_ins, total_del);
     }
 
     Ok(())
@@ -354,6 +407,7 @@ mod tests {
             limit: 50,
             remote: false,
             all: true,
+            merges: false,
             raw: true,
         };
 

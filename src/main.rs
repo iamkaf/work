@@ -287,8 +287,34 @@ fn run(args: Args) -> Result<(), String> {
     let mut total_ins: usize = 0;
     let mut total_del: usize = 0;
 
+    // For pretty alignment we compute widths from the *displayed* commits.
+    let repo_width = commits
+        .iter()
+        .map(|c| {
+            c.repo
+                .strip_prefix(&base)
+                .unwrap_or(&c.repo)
+                .display()
+                .to_string()
+                .len()
+        })
+        .max()
+        .unwrap_or(0);
+
+    let ins_width = commits
+        .iter()
+        .map(|c| c.insertions.to_string().len())
+        .max()
+        .unwrap_or(1);
+    let del_width = commits
+        .iter()
+        .map(|c| c.deletions.to_string().len())
+        .max()
+        .unwrap_or(1);
+
     for c in &commits {
         let rel_repo = c.repo.strip_prefix(&base).unwrap_or(&c.repo);
+        let rel_repo_s = rel_repo.display().to_string();
         let t = format_time_local(c.time);
         let short = c.oid.to_string();
         let short = &short[..7.min(short.len())];
@@ -306,14 +332,32 @@ fn run(args: Args) -> Result<(), String> {
                 c.summary
             );
         } else {
-            println!(
-                "{}  \x1b[1m{}\x1b[0m  {}  +{} -{}  {}",
-                t,
-                rel_repo.display(),
-                short,
+            // Colors:
+            // - repo: bold
+            // - hash: dim
+            // - +ins: green
+            // - -del: red
+            let repo_padded = format!("{rel_repo_s:<repo_width$}", repo_width = repo_width);
+            let repo_fmt = format!("\x1b[1m{repo_padded}\x1b[0m");
+            let hash_fmt = format!("\x1b[2m{short}\x1b[0m");
+            let plus_fmt = format!(
+                "\x1b[32m+{:>ins_width$}\x1b[0m",
                 c.insertions,
+                ins_width = ins_width
+            );
+            let minus_fmt = format!(
+                "\x1b[31m-{:>del_width$}\x1b[0m",
                 c.deletions,
-                c.summary
+                del_width = del_width
+            );
+
+            println!(
+                "{t}  {repo}  {hash}  {plus} {minus}  {msg}",
+                repo = repo_fmt,
+                hash = hash_fmt,
+                plus = plus_fmt,
+                minus = minus_fmt,
+                msg = c.summary
             );
         }
     }
@@ -328,7 +372,10 @@ fn run(args: Args) -> Result<(), String> {
                 args.days
             );
         }
-        println!("Total LoC: +{} -{}", total_ins, total_del);
+        println!(
+            "Total LoC: \x1b[32m+{}\x1b[0m \x1b[31m-{}\x1b[0m",
+            total_ins, total_del
+        );
     }
 
     Ok(())

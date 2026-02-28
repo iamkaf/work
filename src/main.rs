@@ -16,12 +16,16 @@ struct Args {
     depth: usize,
 
     /// How many days back to look
-    #[arg(long, default_value = "7", conflicts_with = "today")]
+    #[arg(long, default_value = "7", conflicts_with_all = ["today", "month"])]
     days: i64,
 
     /// Shortcut for "commits since local midnight"
-    #[arg(long, conflicts_with = "days")]
+    #[arg(long, conflicts_with_all = ["days", "month"])]
     today: bool,
+
+    /// Shortcut for "commits since the start of the local calendar month"
+    #[arg(long, conflicts_with_all = ["days", "today"])]
+    month: bool,
 
     /// Max number of commits to print (across all repos)
     #[arg(short, long, default_value = "50")]
@@ -88,12 +92,8 @@ fn collect_repos(dir: &Path, max_depth: usize, depth: usize, repos: &mut Vec<Pat
 
 fn default_identity() -> Identity {
     let cfg = Config::open_default().ok();
-    let name = cfg
-        .as_ref()
-        .and_then(|c| c.get_string("user.name").ok());
-    let email = cfg
-        .as_ref()
-        .and_then(|c| c.get_string("user.email").ok());
+    let name = cfg.as_ref().and_then(|c| c.get_string("user.name").ok());
+    let email = cfg.as_ref().and_then(|c| c.get_string("user.email").ok());
     Identity { name, email }
 }
 
@@ -111,16 +111,16 @@ fn matches_identity(id: &Identity, author_name: Option<&str>, author_email: Opti
         return true;
     }
 
-    if let (Some(want), Some(got)) = (id.email.as_deref(), author_email) {
-        if want.eq_ignore_ascii_case(got) {
-            return true;
-        }
+    if let (Some(want), Some(got)) = (id.email.as_deref(), author_email)
+        && want.eq_ignore_ascii_case(got)
+    {
+        return true;
     }
 
-    if let (Some(want), Some(got)) = (id.name.as_deref(), author_name) {
-        if want == got {
-            return true;
-        }
+    if let (Some(want), Some(got)) = (id.name.as_deref(), author_name)
+        && want == got
+    {
+        return true;
     }
 
     false
@@ -133,10 +133,7 @@ fn diff_stats(repo: &Repository, commit: &git2::Commit) -> (usize, usize) {
     };
 
     let parent_tree = if commit.parent_count() >= 1 {
-        commit
-            .parent(0)
-            .ok()
-            .and_then(|p| p.tree().ok())
+        commit.parent(0).ok().and_then(|p| p.tree().ok())
     } else {
         None
     };
@@ -233,6 +230,66 @@ fn format_time_local(ts: i64) -> String {
         .unwrap_or_else(|| ts.to_string())
 }
 
+fn start_of_local_day(now: chrono::DateTime<chrono::Local>) -> Result<i64, String> {
+    use chrono::{Local, TimeZone};
+    let midnight = now
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| "Failed to compute local midnight".to_string())?;
+    Local
+        .from_local_datetime(&midnight)
+        .single()
+        .ok_or_else(|| "Failed to resolve local midnight".to_string())
+        .map(|dt| dt.timestamp())
+}
+
+fn start_of_local_month(now: chrono::DateTime<chrono::Local>) -> Result<i64, String> {
+    use chrono::{Datelike, Local, TimeZone};
+    let month_start = now
+        .date_naive()
+        .with_day(1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .ok_or_else(|| "Failed to compute local month start".to_string())?;
+    Local
+        .from_local_datetime(&month_start)
+        .single()
+        .ok_or_else(|| "Failed to resolve local month start".to_string())
+        .map(|dt| dt.timestamp())
+}
+
+fn since_timestamp(args: &Args) -> Result<i64, String> {
+    let now = chrono::Local::now();
+    if args.today {
+        start_of_local_day(now)
+    } else if args.month {
+        start_of_local_month(now)
+    } else {
+        Ok(now
+            .timestamp()
+            .saturating_sub(args.days.saturating_mul(24 * 60 * 60)))
+    }
+}
+
+fn window_description(args: &Args) -> String {
+    if args.today {
+        "today".to_string()
+    } else if args.month {
+        "this month".to_string()
+    } else {
+        format!("the last {} days", args.days)
+    }
+}
+
+fn summary_window_label(args: &Args) -> String {
+    if args.today {
+        "today".to_string()
+    } else if args.month {
+        "this month".to_string()
+    } else {
+        format!("last {} days", args.days)
+    }
+}
+
 fn run(args: Args) -> Result<(), String> {
     let base = args
         .path
@@ -245,23 +302,7 @@ fn run(args: Args) -> Result<(), String> {
     }
 
     let id = default_identity();
-    let since = if args.today {
-        use chrono::{Local, TimeZone};
-        let now = Local::now();
-        let midnight = now
-            .date_naive()
-            .and_hms_opt(0, 0, 0)
-            .ok_or_else(|| "Failed to compute local midnight".to_string())?;
-        Local
-            .from_local_datetime(&midnight)
-            .single()
-            .ok_or_else(|| "Failed to resolve local midnight".to_string())?
-            .timestamp()
-    } else {
-        chrono::Local::now()
-            .timestamp()
-            .saturating_sub(args.days.saturating_mul(24 * 60 * 60))
-    };
+    let since = since_timestamp(&args)?;
     let mut commits: Vec<CommitLine> = repos
         .par_iter()
         .flat_map_iter(|r| collect_commits(r, since, &id, &args))
@@ -270,11 +311,7 @@ fn run(args: Args) -> Result<(), String> {
     commits.sort_by_key(|c| -c.time);
 
     if commits.is_empty() {
-        let window = if args.today {
-            "today".to_string()
-        } else {
-            format!("the last {} days", args.days)
-        };
+        let window = window_description(&args);
         return Err(if args.all {
             format!("No commits found in {window}")
         } else {
@@ -343,16 +380,8 @@ fn run(args: Args) -> Result<(), String> {
             // Align by padding *before* the sign, not between sign and digits.
             let plus_plain = format!("+{}", c.insertions);
             let minus_plain = format!("-{}", c.deletions);
-            let plus_fmt = format!(
-                "\x1b[32m{:>w$}\x1b[0m",
-                plus_plain,
-                w = ins_width + 1
-            );
-            let minus_fmt = format!(
-                "\x1b[31m{:>w$}\x1b[0m",
-                minus_plain,
-                w = del_width + 1
-            );
+            let plus_fmt = format!("\x1b[32m{:>w$}\x1b[0m", plus_plain, w = ins_width + 1);
+            let minus_fmt = format!("\x1b[31m{:>w$}\x1b[0m", minus_plain, w = del_width + 1);
 
             println!(
                 "{t}  {repo}  {hash}  {plus} {minus}  {msg}",
@@ -366,15 +395,11 @@ fn run(args: Args) -> Result<(), String> {
     }
 
     if !args.raw {
-        if args.today {
-            println!("\n{} commits shown (today)", commits.len());
-        } else {
-            println!(
-                "\n{} commits shown (last {} days)",
-                commits.len(),
-                args.days
-            );
-        }
+        println!(
+            "\n{} commits shown ({})",
+            commits.len(),
+            summary_window_label(&args)
+        );
         println!(
             "Total LoC: \x1b[32m+{}\x1b[0m \x1b[31m-{}\x1b[0m",
             total_ins, total_del
@@ -395,6 +420,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Local, LocalResult, TimeZone};
     use std::process::Command;
 
     fn init_repo(tmp: &Path, name: &str) -> PathBuf {
@@ -433,6 +459,21 @@ mod tests {
             .unwrap();
     }
 
+    fn local_datetime(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) -> chrono::DateTime<Local> {
+        match Local.with_ymd_and_hms(year, month, day, hour, minute, second) {
+            LocalResult::Single(dt) => dt,
+            LocalResult::Ambiguous(dt, _) => dt,
+            LocalResult::None => panic!("invalid local datetime"),
+        }
+    }
+
     #[test]
     fn finds_repos_respects_depth() {
         let tmp = tempfile::tempdir().unwrap();
@@ -454,6 +495,7 @@ mod tests {
             depth: 3,
             days: 7,
             today: false,
+            month: false,
             limit: 50,
             remote: false,
             all: true,
@@ -462,7 +504,23 @@ mod tests {
         };
 
         let since = chrono::Local::now().timestamp() - 7 * 24 * 60 * 60;
-        let got = collect_commits(&repo, since, &Identity { name: None, email: None }, &args);
+        let got = collect_commits(
+            &repo,
+            since,
+            &Identity {
+                name: None,
+                email: None,
+            },
+            &args,
+        );
         assert!(got.len() >= 2);
+    }
+
+    #[test]
+    fn computes_month_shortcut_from_local_month_start() {
+        let now = local_datetime(2026, 2, 28, 14, 30, 0);
+        let got = start_of_local_month(now).unwrap();
+        let expected = local_datetime(2026, 2, 1, 0, 0, 0).timestamp();
+        assert_eq!(got, expected);
     }
 }

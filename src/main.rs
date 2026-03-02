@@ -27,7 +27,7 @@ struct Args {
     #[arg(long, conflicts_with_all = ["days", "today", "last_month"])]
     month: bool,
 
-    /// Shortcut for "commits since the start of the previous local calendar month"
+    /// Shortcut for "commits from the previous calendar month only"
     #[arg(long, conflicts_with_all = ["days", "today", "month"])]
     last_month: bool,
 
@@ -155,7 +155,7 @@ fn diff_stats(repo: &Repository, commit: &git2::Commit) -> (usize, usize) {
     (stats.insertions(), stats.deletions())
 }
 
-fn collect_commits(repo_path: &Path, since: i64, id: &Identity, args: &Args) -> Vec<CommitLine> {
+fn collect_commits(repo_path: &Path, since: i64, until: Option<i64>, id: &Identity, args: &Args) -> Vec<CommitLine> {
     if args.remote {
         fetch_repo(repo_path);
     }
@@ -191,8 +191,13 @@ fn collect_commits(repo_path: &Path, since: i64, id: &Identity, args: &Args) -> 
 
         let t = commit.time().seconds();
         if t < since {
-            // Since revwalk is time-sorted, we can stop early.
             break;
+        }
+
+        if let Some(until) = until {
+            if t >= until {
+                continue;
+            }
         }
 
         if !args.merges && commit.parent_count() > 1 {
@@ -261,6 +266,10 @@ fn start_of_local_month(now: chrono::DateTime<chrono::Local>) -> Result<i64, Str
         .map(|dt| dt.timestamp())
 }
 
+fn end_of_local_last_month(now: chrono::DateTime<chrono::Local>) -> Result<i64, String> {
+    start_of_local_month(now)
+}
+
 fn start_of_local_last_month(now: chrono::DateTime<chrono::Local>) -> Result<i64, String> {
     use chrono::{Datelike, Local, NaiveDate, TimeZone};
 
@@ -285,18 +294,18 @@ fn start_of_local_last_month(now: chrono::DateTime<chrono::Local>) -> Result<i64
         .map(|dt| dt.timestamp())
 }
 
-fn since_timestamp(args: &Args) -> Result<i64, String> {
+fn since_timestamp(args: &Args) -> Result<(i64, Option<i64>), String> {
     let now = chrono::Local::now();
     if args.today {
-        start_of_local_day(now)
+        Ok((start_of_local_day(now)?, None))
     } else if args.month {
-        start_of_local_month(now)
+        Ok((start_of_local_month(now)?, None))
     } else if args.last_month {
-        start_of_local_last_month(now)
+        Ok((start_of_local_last_month(now)?, Some(end_of_local_last_month(now)?)))
     } else {
-        Ok(now
+        Ok((now
             .timestamp()
-            .saturating_sub(args.days.saturating_mul(24 * 60 * 60)))
+            .saturating_sub(args.days.saturating_mul(24 * 60 * 60)), None))
     }
 }
 
@@ -306,7 +315,7 @@ fn window_description(args: &Args) -> String {
     } else if args.month {
         "this month".to_string()
     } else if args.last_month {
-        "since the start of last month".to_string()
+        "last month".to_string()
     } else {
         format!("the last {} days", args.days)
     }
@@ -318,7 +327,7 @@ fn summary_window_label(args: &Args) -> String {
     } else if args.month {
         "this month".to_string()
     } else if args.last_month {
-        "since last month".to_string()
+        "last month".to_string()
     } else {
         format!("last {} days", args.days)
     }
@@ -336,10 +345,10 @@ fn run(args: Args) -> Result<(), String> {
     }
 
     let id = default_identity();
-    let since = since_timestamp(&args)?;
+    let (since, until) = since_timestamp(&args)?;
     let mut commits: Vec<CommitLine> = repos
         .par_iter()
-        .flat_map_iter(|r| collect_commits(r, since, &id, &args))
+        .flat_map_iter(|r| collect_commits(r, since, until, &id, &args))
         .collect();
 
     commits.sort_by_key(|c| -c.time);
@@ -542,6 +551,7 @@ mod tests {
         let got = collect_commits(
             &repo,
             since,
+            None,
             &Identity {
                 name: None,
                 email: None,
@@ -570,6 +580,19 @@ mod tests {
         let now = local_datetime(2026, 1, 10, 14, 30, 0);
         let got = start_of_local_last_month(now).unwrap();
         let expected = local_datetime(2025, 12, 1, 0, 0, 0).timestamp();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn end_of_last_month_is_start_of_current_month() {
+        let now = local_datetime(2026, 3, 15, 14, 30, 0);
+        let got = end_of_local_last_month(now).unwrap();
+        let expected = local_datetime(2026, 3, 1, 0, 0, 0).timestamp();
+        assert_eq!(got, expected);
+
+        let now = local_datetime(2026, 1, 10, 14, 30, 0);
+        let got = end_of_local_last_month(now).unwrap();
+        let expected = local_datetime(2026, 1, 1, 0, 0, 0).timestamp();
         assert_eq!(got, expected);
     }
 }

@@ -16,16 +16,20 @@ struct Args {
     depth: usize,
 
     /// How many days back to look
-    #[arg(long, default_value = "7", conflicts_with_all = ["today", "month"])]
+    #[arg(long, default_value = "7", conflicts_with_all = ["today", "month", "last_month"])]
     days: i64,
 
     /// Shortcut for "commits since local midnight"
-    #[arg(long, conflicts_with_all = ["days", "month"])]
+    #[arg(long, conflicts_with_all = ["days", "month", "last_month"])]
     today: bool,
 
     /// Shortcut for "commits since the start of the local calendar month"
-    #[arg(long, conflicts_with_all = ["days", "today"])]
+    #[arg(long, conflicts_with_all = ["days", "today", "last_month"])]
     month: bool,
+
+    /// Shortcut for "commits since the start of the previous local calendar month"
+    #[arg(long, conflicts_with_all = ["days", "today", "month"])]
+    last_month: bool,
 
     /// Max number of commits to print (across all repos)
     #[arg(short, long, default_value = "50")]
@@ -257,12 +261,38 @@ fn start_of_local_month(now: chrono::DateTime<chrono::Local>) -> Result<i64, Str
         .map(|dt| dt.timestamp())
 }
 
+fn start_of_local_last_month(now: chrono::DateTime<chrono::Local>) -> Result<i64, String> {
+    use chrono::{Datelike, Local, NaiveDate, TimeZone};
+
+    let year = now.year();
+    let month = now.month();
+
+    let (py, pm) = if month == 1 {
+        (year - 1, 12)
+    } else {
+        (year, month - 1)
+    };
+
+    let d = NaiveDate::from_ymd_opt(py, pm, 1)
+        .ok_or_else(|| "Failed to compute last month start date".to_string())?
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| "Failed to compute last month start".to_string())?;
+
+    Local
+        .from_local_datetime(&d)
+        .single()
+        .ok_or_else(|| "Failed to resolve last month start".to_string())
+        .map(|dt| dt.timestamp())
+}
+
 fn since_timestamp(args: &Args) -> Result<i64, String> {
     let now = chrono::Local::now();
     if args.today {
         start_of_local_day(now)
     } else if args.month {
         start_of_local_month(now)
+    } else if args.last_month {
+        start_of_local_last_month(now)
     } else {
         Ok(now
             .timestamp()
@@ -275,6 +305,8 @@ fn window_description(args: &Args) -> String {
         "today".to_string()
     } else if args.month {
         "this month".to_string()
+    } else if args.last_month {
+        "since the start of last month".to_string()
     } else {
         format!("the last {} days", args.days)
     }
@@ -285,6 +317,8 @@ fn summary_window_label(args: &Args) -> String {
         "today".to_string()
     } else if args.month {
         "this month".to_string()
+    } else if args.last_month {
+        "since last month".to_string()
     } else {
         format!("last {} days", args.days)
     }
@@ -496,6 +530,7 @@ mod tests {
             days: 7,
             today: false,
             month: false,
+            last_month: false,
             limit: 50,
             remote: false,
             all: true,
@@ -521,6 +556,20 @@ mod tests {
         let now = local_datetime(2026, 2, 28, 14, 30, 0);
         let got = start_of_local_month(now).unwrap();
         let expected = local_datetime(2026, 2, 1, 0, 0, 0).timestamp();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn computes_last_month_shortcut_from_previous_local_month_start() {
+        let now = local_datetime(2026, 3, 2, 14, 30, 0);
+        let got = start_of_local_last_month(now).unwrap();
+        let expected = local_datetime(2026, 2, 1, 0, 0, 0).timestamp();
+        assert_eq!(got, expected);
+
+        // Year boundary
+        let now = local_datetime(2026, 1, 10, 14, 30, 0);
+        let got = start_of_local_last_month(now).unwrap();
+        let expected = local_datetime(2025, 12, 1, 0, 0, 0).timestamp();
         assert_eq!(got, expected);
     }
 }
